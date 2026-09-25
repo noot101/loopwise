@@ -64,12 +64,19 @@
     background:var(--paper); border-radius:10px; padding:10px 20px;
     box-shadow:0 2px 10px rgba(0,0,0,.2);
     display:none; align-items:center; gap:18px; z-index:1000;
-    font-size:0.9rem;
+    font-size:0.9rem; flex-wrap:wrap; justify-content:center;
   }
   #routeInfo.open{ display:flex; }
   #routeInfo .label{ font-weight:600; color:var(--moss-dark); }
   #routeInfo .stat{ color:var(--ink); }
   #routeInfo .stat b{ color:var(--moss-dark); }
+  #routeInfo button{ padding:6px 12px; font-size:0.85rem; }
+  #startWalkBtn{ background:var(--clay); color:#fff; }
+  #stopWalkBtn{ background:#a4432b; color:#fff; display:none; }
+  #routeInfo.walking #startWalkBtn{ display:none; }
+  #routeInfo.walking #stopWalkBtn{ display:inline-block; }
+  #routeInfo.walking .planOnly{ display:none; }
+  #routeInfo.walking .walkOnly{ display:inline !important; }
 
   #status{
     padding:8px 18px; font-size:0.85rem; color:var(--bark); background:var(--paper);
@@ -114,8 +121,11 @@
     <div id="map"></div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
-      <span class="stat"><b id="statDist">–</b> km</span>
-      <span class="stat">± <b id="statTime">–</b> min</span>
+      <span class="stat planOnly"><b id="statDist">–</b> km</span>
+      <span class="stat planOnly">± <b id="statTime">–</b> min</span>
+      <span class="stat walkOnly" style="display:none;">Onderweg: <b id="walkedDist">0.0</b> km</span>
+      <button id="startWalkBtn">Start wandeling</button>
+      <button id="stopWalkBtn">Stop</button>
     </div>
   </div>
 </div>
@@ -140,6 +150,7 @@
   let userLatLng = null;
   let apiKey = localStorage.getItem("loopwise_ors_key") || "";
   let mapKey = localStorage.getItem("loopwise_map_key") || "";
+  let watchId = null, liveMarker = null, walkedMeters = 0, lastWalkPos = null;
 
   const statusEl = document.getElementById("status");
   const genBtn = document.getElementById("generate");
@@ -200,7 +211,11 @@
     routeLayers = [];
     currentRoutes = [];
     selectedIndex = null;
-    document.getElementById("routeInfo").classList.remove("open");
+    document.getElementById("routeInfo").classList.remove("open", "walking");
+    if(watchId !== null){
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
   }
 
   async function fetchRoute(targetMeters, seed){
@@ -318,6 +333,56 @@
   }
 
   genBtn.addEventListener("click", generateRoutes);
+
+  // Afstand tussen twee GPS-punten in meters (haversine)
+  function haversine(a, b){
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLon = toRad(b.lon - a.lon);
+    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function startWalk(){
+    if(!navigator.geolocation) return;
+    walkedMeters = 0;
+    lastWalkPos = null;
+    document.getElementById("walkedDist").textContent = "0.0";
+    document.getElementById("routeInfo").classList.add("walking");
+    watchId = navigator.geolocation.watchPosition(
+      pos => {
+        const here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        if(!liveMarker){
+          liveMarker = L.circleMarker([here.lat, here.lon], {
+            radius: 9, color: "#fff", weight: 2, fillColor: "#1d4ed8", fillOpacity: 1
+          }).addTo(map);
+        } else {
+          liveMarker.setLatLng([here.lat, here.lon]);
+        }
+        if(lastWalkPos){
+          walkedMeters += haversine(lastWalkPos, here);
+          document.getElementById("walkedDist").textContent = (walkedMeters/1000).toFixed(1);
+        }
+        lastWalkPos = here;
+        map.panTo([here.lat, here.lon], { animate: true });
+      },
+      err => setStatus("Kon je positie niet volgen: " + err.message, true),
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+    );
+  }
+
+  function stopWalk(){
+    if(watchId !== null){
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    document.getElementById("routeInfo").classList.remove("walking");
+  }
+
+  document.getElementById("startWalkBtn").addEventListener("click", startWalk);
+  document.getElementById("stopWalkBtn").addEventListener("click", stopWalk);
 
   document.getElementById("saveKey").addEventListener("click", () => {
     const orsVal = document.getElementById("apiKeyInput").value.trim();
