@@ -39,17 +39,18 @@
   header p{ margin:2px 0 0; font-size:0.85rem; color:var(--bark); }
 
   #controls{
-    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    display:flex; gap:14px; align-items:center; flex-wrap:wrap;
     padding:12px 18px; background:var(--paper); border-bottom:1px solid var(--line);
   }
-  #controls label{ font-size:0.85rem; color:var(--bark); }
+  #distanceWrap{ display:flex; flex-direction:column; flex:1; min-width:180px; gap:2px; }
+  #distanceWrap label{ font-size:0.8rem; color:var(--bark); display:flex; justify-content:space-between; }
+  #distanceWrap label b{ color:var(--moss-dark); font-weight:600; }
   #distance{
-    width:80px; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
-    font-size:1rem; background:var(--sand);
+    width:100%; accent-color:var(--moss); height:28px;
   }
   button{
     border:none; border-radius:6px; padding:9px 16px; font-size:0.9rem;
-    cursor:pointer; font-weight:600; transition:opacity .15s;
+    cursor:pointer; font-weight:600; transition:opacity .15s; white-space:nowrap;
   }
   button:disabled{ opacity:.5; cursor:default; }
   #generate{ background:var(--moss); color:#fff; }
@@ -63,28 +64,13 @@
   }
   #status.error{ color:#a4432b; }
 
-  #routePanel{
-    display:none; background:var(--paper); border-top:1px solid var(--line);
-    padding:12px 18px 16px;
-  }
-  #routePanel.open{ display:block; }
-  #routePanel h2{ margin:0 0 6px; font-size:1rem; color:var(--moss-dark); }
-  #routeStats{ display:flex; gap:18px; font-size:0.9rem; color:var(--ink); margin-bottom:10px; }
-  #routeStats b{ display:block; font-size:1.1rem; color:var(--moss-dark); }
-  #routePanel .actions{ display:flex; gap:8px; }
-  #startWalk{ background:var(--clay); color:#fff; }
-  #newRoutes{ background:transparent; color:var(--moss-dark); border:1px solid var(--moss); }
-
-  .route-line{ cursor:pointer; }
-
-  #keyModal, #logModal{
+  #keyModal{
     position:fixed; inset:0; background:rgba(34,39,31,.6);
     display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000;
   }
-  #keyModal.hidden, #logModal.hidden{ display:none; }
+  #keyModal.hidden{ display:none; }
   #keyBox{
     background:var(--paper); border-radius:10px; padding:20px; max-width:360px; width:100%;
-    max-height:80vh; overflow-y:auto;
   }
   #keyBox h2{ margin-top:0; font-size:1.05rem; color:var(--moss-dark); }
   #keyBox p{ font-size:0.85rem; color:var(--bark); line-height:1.4; }
@@ -93,12 +79,6 @@
     margin:10px 0; font-size:0.9rem;
   }
   #keyBox button{ background:var(--moss); color:#fff; width:100%; }
-  #logList{ font-size:0.9rem; }
-  .log-entry{
-    display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);
-  }
-  .log-entry:last-child{ border-bottom:none; }
-  .log-empty{ color:var(--bark); font-size:0.85rem; }
 </style>
 </head>
 <body>
@@ -109,26 +89,15 @@
   </header>
 
   <div id="controls">
-    <label for="distance">Afstand (km)</label>
-    <input type="number" id="distance" value="5" min="1" max="30" step="0.5">
+    <div id="distanceWrap">
+      <label for="distance">Afstand <b id="distanceValue">5.0 km</b></label>
+      <input type="range" id="distance" value="5" min="1" max="20" step="0.1">
+    </div>
     <button id="generate">Genereer routes</button>
-    <button id="showLog" style="background:transparent;color:var(--moss-dark);border:1px solid var(--moss);">Mijn wandelingen</button>
   </div>
 
   <div id="status"></div>
   <div id="map"></div>
-
-  <div id="routePanel">
-    <h2 id="routeTitle">Route</h2>
-    <div id="routeStats">
-      <div>Afstand<b id="statDist">–</b></div>
-      <div>Geschatte tijd<b id="statTime">–</b></div>
-    </div>
-    <div class="actions">
-      <button id="startWalk">Route vastleggen</button>
-      <button id="newRoutes">Nieuwe routes</button>
-    </div>
-  </div>
 </div>
 
 <div id="keyModal" class="hidden">
@@ -140,18 +109,11 @@
   </div>
 </div>
 
-<div id="logModal" class="hidden">
-  <div id="keyBox">
-    <h2>Mijn wandelingen</h2>
-    <div id="logList"></div>
-    <button id="closeLog" style="margin-top:12px;">Sluiten</button>
-  </div>
-</div>
-
 <script>
 (function(){
   const ORS_URL = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
   const COLORS = ["#1d4ed8", "#e11d48", "#059669"];
+  const MAX_ATTEMPTS_PER_ROUTE = 5;
 
   let map, userMarker, routeLayers = [], selectedIndex = null, currentRoutes = [];
   let userLatLng = null;
@@ -160,9 +122,7 @@
   const statusEl = document.getElementById("status");
   const genBtn = document.getElementById("generate");
   const distanceInput = document.getElementById("distance");
-  const routePanel = document.getElementById("routePanel");
-  const newRoutesBtn = document.getElementById("newRoutes");
-  const startWalkBtn = document.getElementById("startWalk");
+  const distanceValue = document.getElementById("distanceValue");
   const keyModal = document.getElementById("keyModal");
 
   function setStatus(msg, isError){
@@ -170,12 +130,23 @@
     statusEl.classList.toggle("error", !!isError);
   }
 
+  // Hoe streng we op de afstand mikken: kleiner rondje mag relatief meer afwijken,
+  // een groot rondje moet dichterbij de opgegeven afstand blijven.
+  function toleranceFor(km){
+    if(km < 5) return 0.20;
+    if(km > 15) return 0.05;
+    return 0.10;
+  }
+
+  distanceInput.addEventListener("input", () => {
+    distanceValue.textContent = parseFloat(distanceInput.value).toFixed(1) + " km";
+  });
+
   function initMap(lat, lon){
     map = L.map("map").setView([lat, lon], 14);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    L.tileLayer("https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png", {
       maxZoom: 19,
-      subdomains: "abcd",
-      attribution: "&copy; OpenStreetMap-bijdragers &copy; CARTO"
+      attribution: "&copy; OpenStreetMap-bijdragers, style Wikimedia"
     }).addTo(map);
     userMarker = L.circleMarker([lat, lon], {
       radius: 8, color: "#c77b4a", fillColor: "#c77b4a", fillOpacity: 1
@@ -207,15 +178,14 @@
     routeLayers = [];
     currentRoutes = [];
     selectedIndex = null;
-    routePanel.classList.remove("open");
   }
 
-  async function fetchRoute(seed){
+  async function fetchRoute(targetMeters, seed){
     const body = {
       coordinates: [[userLatLng.lon, userLatLng.lat]],
       options: {
         round_trip: {
-          length: Math.round(parseFloat(distanceInput.value) * 1000),
+          length: targetMeters,
           points: 4,
           seed: seed
         }
@@ -236,6 +206,32 @@
     return resp.json();
   }
 
+  // Probeert (met wisselende seeds) een route te vinden die binnen de tolerantie
+  // van de opgegeven afstand valt. Houdt de beste poging bij als terugvaloptie.
+  async function fetchRouteWithinTolerance(targetMeters, tolerance){
+    let best = null;
+    for(let attempt = 0; attempt < MAX_ATTEMPTS_PER_ROUTE; attempt++){
+      const seed = Math.floor(Math.random()*100000);
+      let geojson;
+      try{
+        geojson = await fetchRoute(targetMeters, seed);
+      } catch(e){
+        if(attempt === MAX_ATTEMPTS_PER_ROUTE - 1 && !best) throw e;
+        continue;
+      }
+      const feature = geojson.features[0];
+      const dist = feature.properties.summary.distance;
+      const deviation = Math.abs(dist - targetMeters) / targetMeters;
+      if(!best || deviation < best.deviation){
+        best = { feature, dist, duration: feature.properties.summary.duration, deviation };
+      }
+      if(deviation <= tolerance){
+        return best;
+      }
+    }
+    return best;
+  }
+
   async function generateRoutes(){
     if(!apiKey){
       keyModal.classList.remove("hidden");
@@ -249,34 +245,33 @@
     clearRoutes();
     setStatus("Routes worden berekend…");
 
+    const km = parseFloat(distanceInput.value);
+    const targetMeters = Math.round(km * 1000);
+    const tolerance = toleranceFor(km);
+
     try{
-      const seeds = [
-        Math.floor(Math.random()*100000),
-        Math.floor(Math.random()*100000),
-        Math.floor(Math.random()*100000)
-      ];
-      const results = await Promise.allSettled(seeds.map(fetchRoute));
+      const results = await Promise.allSettled([
+        fetchRouteWithinTolerance(targetMeters, tolerance),
+        fetchRouteWithinTolerance(targetMeters, tolerance),
+        fetchRouteWithinTolerance(targetMeters, tolerance)
+      ]);
       let ok = 0;
       results.forEach((r, i) => {
-        if(r.status === "fulfilled"){
-          const geojson = r.value;
-          const feature = geojson.features[0];
-          const dist = feature.properties.summary.distance;
-          const dur = feature.properties.summary.duration;
+        if(r.status === "fulfilled" && r.value){
+          const { feature, dist, duration } = r.value;
           const layer = L.geoJSON(feature, {
             style: { color: COLORS[i % COLORS.length], weight: 6, opacity: 0.85 }
           }).addTo(map);
           layer.on("click", () => selectRoute(i));
-          layer._loopwiseIndex = i;
           routeLayers.push(layer);
-          currentRoutes.push({ distance: dist, duration: dur, layer });
+          currentRoutes.push({ distance: dist, duration: duration });
           ok++;
         }
       });
       if(ok === 0){
         setStatus("Geen routes gevonden. Probeer een andere afstand.", true);
       } else {
-        setStatus(ok + " route(s) gevonden. Tik op een lijn op de kaart om te kiezen.");
+        setStatus(ok + " route(s) gevonden, dicht bij " + km.toFixed(1) + " km. Tik op een lijn om de details te zien.");
         const group = new L.featureGroup(routeLayers);
         map.fitBounds(group.getBounds().pad(0.1));
       }
@@ -293,28 +288,10 @@
       l.setStyle({ weight: idx === i ? 8 : 6, opacity: idx === i ? 1 : 0.4 });
     });
     const r = currentRoutes[i];
-    document.getElementById("routeTitle").textContent = "Route " + (i+1);
-    document.getElementById("statDist").textContent = (r.distance/1000).toFixed(1) + " km";
-    document.getElementById("statTime").textContent = Math.round(r.duration/60) + " min";
-    routePanel.classList.add("open");
-  }
-
-  function saveWalk(){
-    if(selectedIndex === null) return;
-    const r = currentRoutes[selectedIndex];
-    const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
-    log.push({
-      date: new Date().toISOString(),
-      distanceKm: +(r.distance/1000).toFixed(2),
-      durationMin: Math.round(r.duration/60)
-    });
-    localStorage.setItem("loopwise_log", JSON.stringify(log));
-    setStatus("Route vastgelegd. Bekijk 'm via 'Mijn wandelingen' hierboven. (" + log.length + " totaal)");
+    setStatus("Route " + (i+1) + ": " + (r.distance/1000).toFixed(1) + " km, geschat " + Math.round(r.duration/60) + " min (op 5 km/u).");
   }
 
   genBtn.addEventListener("click", generateRoutes);
-  newRoutesBtn.addEventListener("click", generateRoutes);
-  startWalkBtn.addEventListener("click", saveWalk);
 
   document.getElementById("saveKey").addEventListener("click", () => {
     const val = document.getElementById("apiKeyInput").value.trim();
@@ -323,29 +300,6 @@
     localStorage.setItem("loopwise_ors_key", val);
     keyModal.classList.add("hidden");
     generateRoutes();
-  });
-
-  function renderLog(){
-    const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
-    const list = document.getElementById("logList");
-    if(log.length === 0){
-      list.innerHTML = '<p class="log-empty">Nog geen wandelingen vastgelegd.</p>';
-      return;
-    }
-    list.innerHTML = log.slice().reverse().map(entry => {
-      const d = new Date(entry.date);
-      const dateStr = d.toLocaleDateString("nl-NL", { day:"numeric", month:"short", year:"numeric" });
-      return '<div class="log-entry"><span>' + dateStr + '</span><span>' +
-        entry.distanceKm + ' km &middot; ' + entry.durationMin + ' min</span></div>';
-    }).join("");
-  }
-
-  document.getElementById("showLog").addEventListener("click", () => {
-    renderLog();
-    document.getElementById("logModal").classList.remove("hidden");
-  });
-  document.getElementById("closeLog").addEventListener("click", () => {
-    document.getElementById("logModal").classList.add("hidden");
   });
 
   genBtn.disabled = true;
