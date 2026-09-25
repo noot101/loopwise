@@ -77,13 +77,14 @@
 
   .route-line{ cursor:pointer; }
 
-  #keyModal{
+  #keyModal, #logModal{
     position:fixed; inset:0; background:rgba(34,39,31,.6);
     display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000;
   }
-  #keyModal.hidden{ display:none; }
+  #keyModal.hidden, #logModal.hidden{ display:none; }
   #keyBox{
     background:var(--paper); border-radius:10px; padding:20px; max-width:360px; width:100%;
+    max-height:80vh; overflow-y:auto;
   }
   #keyBox h2{ margin-top:0; font-size:1.05rem; color:var(--moss-dark); }
   #keyBox p{ font-size:0.85rem; color:var(--bark); line-height:1.4; }
@@ -92,6 +93,12 @@
     margin:10px 0; font-size:0.9rem;
   }
   #keyBox button{ background:var(--moss); color:#fff; width:100%; }
+  #logList{ font-size:0.9rem; }
+  .log-entry{
+    display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);
+  }
+  .log-entry:last-child{ border-bottom:none; }
+  .log-empty{ color:var(--bark); font-size:0.85rem; }
 </style>
 </head>
 <body>
@@ -105,6 +112,7 @@
     <label for="distance">Afstand (km)</label>
     <input type="number" id="distance" value="5" min="1" max="30" step="0.5">
     <button id="generate">Genereer routes</button>
+    <button id="showLog" style="background:transparent;color:var(--moss-dark);border:1px solid var(--moss);">Mijn wandelingen</button>
   </div>
 
   <div id="status"></div>
@@ -123,7 +131,7 @@
   </div>
 </div>
 
-<div id="keyModal">
+<div id="keyModal" class="hidden">
   <div id="keyBox">
     <h2>Openrouteservice API-key</h2>
     <p>Loopwise gebruikt openrouteservice.org om routes te berekenen. Plak hier je gratis API-key (uit je HeiGIT/openrouteservice dashboard). Hij wordt alleen op je eigen telefoon opgeslagen.</p>
@@ -132,10 +140,18 @@
   </div>
 </div>
 
+<div id="logModal" class="hidden">
+  <div id="keyBox">
+    <h2>Mijn wandelingen</h2>
+    <div id="logList"></div>
+    <button id="closeLog" style="margin-top:12px;">Sluiten</button>
+  </div>
+</div>
+
 <script>
 (function(){
   const ORS_URL = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
-  const COLORS = ["#3a5a40", "#c77b4a", "#5c4a3a"];
+  const COLORS = ["#1d4ed8", "#e11d48", "#059669"];
 
   let map, userMarker, routeLayers = [], selectedIndex = null, currentRoutes = [];
   let userLatLng = null;
@@ -156,9 +172,10 @@
 
   function initMap(lat, lon){
     map = L.map("map").setView([lat, lon], 14);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
       maxZoom: 19,
-      attribution: "&copy; OpenStreetMap-bijdragers"
+      subdomains: "abcd",
+      attribution: "&copy; OpenStreetMap-bijdragers &copy; CARTO"
     }).addTo(map);
     userMarker = L.circleMarker([lat, lon], {
       radius: 8, color: "#c77b4a", fillColor: "#c77b4a", fillOpacity: 1
@@ -247,7 +264,7 @@
           const dist = feature.properties.summary.distance;
           const dur = feature.properties.summary.duration;
           const layer = L.geoJSON(feature, {
-            style: { color: COLORS[i % COLORS.length], weight: 5, opacity: 0.55 }
+            style: { color: COLORS[i % COLORS.length], weight: 6, opacity: 0.85 }
           }).addTo(map);
           layer.on("click", () => selectRoute(i));
           layer._loopwiseIndex = i;
@@ -273,7 +290,7 @@
   function selectRoute(i){
     selectedIndex = i;
     routeLayers.forEach((l, idx) => {
-      l.setStyle({ weight: idx === i ? 7 : 5, opacity: idx === i ? 0.95 : 0.35 });
+      l.setStyle({ weight: idx === i ? 8 : 6, opacity: idx === i ? 1 : 0.4 });
     });
     const r = currentRoutes[i];
     document.getElementById("routeTitle").textContent = "Route " + (i+1);
@@ -292,7 +309,7 @@
       durationMin: Math.round(r.duration/60)
     });
     localStorage.setItem("loopwise_log", JSON.stringify(log));
-    setStatus("Route vastgelegd in je overzicht. (" + log.length + " wandelingen totaal)");
+    setStatus("Route vastgelegd. Bekijk 'm via 'Mijn wandelingen' hierboven. (" + log.length + " totaal)");
   }
 
   genBtn.addEventListener("click", generateRoutes);
@@ -308,7 +325,33 @@
     generateRoutes();
   });
 
+  function renderLog(){
+    const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
+    const list = document.getElementById("logList");
+    if(log.length === 0){
+      list.innerHTML = '<p class="log-empty">Nog geen wandelingen vastgelegd.</p>';
+      return;
+    }
+    list.innerHTML = log.slice().reverse().map(entry => {
+      const d = new Date(entry.date);
+      const dateStr = d.toLocaleDateString("nl-NL", { day:"numeric", month:"short", year:"numeric" });
+      return '<div class="log-entry"><span>' + dateStr + '</span><span>' +
+        entry.distanceKm + ' km &middot; ' + entry.durationMin + ' min</span></div>';
+    }).join("");
+  }
+
+  document.getElementById("showLog").addEventListener("click", () => {
+    renderLog();
+    document.getElementById("logModal").classList.remove("hidden");
+  });
+  document.getElementById("closeLog").addEventListener("click", () => {
+    document.getElementById("logModal").classList.add("hidden");
+  });
+
   genBtn.disabled = true;
+  if(!apiKey){
+    keyModal.classList.remove("hidden");
+  }
   locate();
 })();
 </script>
