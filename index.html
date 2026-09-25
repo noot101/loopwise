@@ -56,7 +56,20 @@
   #generate{ background:var(--moss); color:#fff; }
   #generate:hover:not(:disabled){ opacity:.9; }
 
-  #map{ flex:1; min-height:0; }
+  #mapWrap{ flex:1; min-height:0; position:relative; }
+  #map{ position:absolute; inset:0; }
+
+  #routeInfo{
+    position:absolute; left:50%; bottom:18px; transform:translateX(-50%);
+    background:var(--paper); border-radius:10px; padding:10px 20px;
+    box-shadow:0 2px 10px rgba(0,0,0,.2);
+    display:none; align-items:center; gap:18px; z-index:1000;
+    font-size:0.9rem;
+  }
+  #routeInfo.open{ display:flex; }
+  #routeInfo .label{ font-weight:600; color:var(--moss-dark); }
+  #routeInfo .stat{ color:var(--ink); }
+  #routeInfo .stat b{ color:var(--moss-dark); }
 
   #status{
     padding:8px 18px; font-size:0.85rem; color:var(--bark); background:var(--paper);
@@ -97,14 +110,22 @@
   </div>
 
   <div id="status"></div>
-  <div id="map"></div>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div id="routeInfo">
+      <span class="label" id="routeLabel">Route</span>
+      <span class="stat"><b id="statDist">–</b> km</span>
+      <span class="stat">± <b id="statTime">–</b> min</span>
+    </div>
+  </div>
 </div>
 
 <div id="keyModal" class="hidden">
   <div id="keyBox">
-    <h2>Openrouteservice API-key</h2>
-    <p>Loopwise gebruikt openrouteservice.org om routes te berekenen. Plak hier je gratis API-key (uit je HeiGIT/openrouteservice dashboard). Hij wordt alleen op je eigen telefoon opgeslagen.</p>
-    <input type="text" id="apiKeyInput" placeholder="jouw API-key">
+    <h2>Twee gratis API-keys nodig</h2>
+    <p>Loopwise gebruikt twee gratis diensten: <b>openrouteservice.org</b> voor het berekenen van routes, en <b>MapTiler</b> voor de kaarttegels. Beide keys worden alleen op je eigen telefoon opgeslagen.</p>
+    <input type="text" id="apiKeyInput" placeholder="openrouteservice API-key">
+    <input type="text" id="mapKeyInput" placeholder="MapTiler API-key (maptiler.com, gratis account)">
     <button id="saveKey">Opslaan</button>
   </div>
 </div>
@@ -118,6 +139,7 @@
   let map, userMarker, routeLayers = [], selectedIndex = null, currentRoutes = [];
   let userLatLng = null;
   let apiKey = localStorage.getItem("loopwise_ors_key") || "";
+  let mapKey = localStorage.getItem("loopwise_map_key") || "";
 
   const statusEl = document.getElementById("status");
   const genBtn = document.getElementById("generate");
@@ -144,9 +166,9 @@
 
   function initMap(lat, lon){
     map = L.map("map").setView([lat, lon], 14);
-    L.tileLayer("https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png", {
+    L.tileLayer("https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=" + mapKey, {
       maxZoom: 19,
-      attribution: "&copy; OpenStreetMap-bijdragers, style Wikimedia"
+      attribution: "&copy; OpenStreetMap-bijdragers &copy; MapTiler"
     }).addTo(map);
     userMarker = L.circleMarker([lat, lon], {
       radius: 8, color: "#c77b4a", fillColor: "#c77b4a", fillOpacity: 1
@@ -178,6 +200,7 @@
     routeLayers = [];
     currentRoutes = [];
     selectedIndex = null;
+    document.getElementById("routeInfo").classList.remove("open");
   }
 
   async function fetchRoute(targetMeters, seed){
@@ -288,25 +311,32 @@
       l.setStyle({ weight: idx === i ? 8 : 6, opacity: idx === i ? 1 : 0.4 });
     });
     const r = currentRoutes[i];
-    setStatus("Route " + (i+1) + ": " + (r.distance/1000).toFixed(1) + " km, geschat " + Math.round(r.duration/60) + " min (op 5 km/u).");
+    document.getElementById("routeLabel").textContent = "Route " + (i+1);
+    document.getElementById("statDist").textContent = (r.distance/1000).toFixed(1);
+    document.getElementById("statTime").textContent = Math.round(r.duration/60);
+    document.getElementById("routeInfo").classList.add("open");
   }
 
   genBtn.addEventListener("click", generateRoutes);
 
   document.getElementById("saveKey").addEventListener("click", () => {
-    const val = document.getElementById("apiKeyInput").value.trim();
-    if(!val){ return; }
-    apiKey = val;
-    localStorage.setItem("loopwise_ors_key", val);
+    const orsVal = document.getElementById("apiKeyInput").value.trim();
+    const mapVal = document.getElementById("mapKeyInput").value.trim();
+    if(!orsVal || !mapVal){ return; }
+    apiKey = orsVal;
+    mapKey = mapVal;
+    localStorage.setItem("loopwise_ors_key", orsVal);
+    localStorage.setItem("loopwise_map_key", mapVal);
     keyModal.classList.add("hidden");
-    generateRoutes();
+    locate();
   });
 
   genBtn.disabled = true;
-  if(!apiKey){
+  if(!apiKey || !mapKey){
     keyModal.classList.remove("hidden");
+  } else {
+    locate();
   }
-  locate();
 })();
 </script>
 </body>
