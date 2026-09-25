@@ -71,6 +71,11 @@
   #routeInfo .stat{ color:var(--ink); }
   #routeInfo .stat b{ color:var(--moss-dark); }
   #routeInfo button{ padding:6px 12px; font-size:0.85rem; }
+  #versionTag{
+    position:absolute; right:8px; bottom:6px; font-size:0.7rem; color:var(--bark);
+    z-index:900; pointer-events:none; opacity:.65;
+    background:rgba(255,253,249,.6); padding:1px 6px; border-radius:4px;
+  }
   #startWalkBtn{ background:var(--clay); color:#fff; }
   #stopWalkBtn{ background:#a4432b; color:#fff; display:none; }
   #routeInfo.walking #startWalkBtn{ display:none; }
@@ -119,6 +124,7 @@
   <div id="status"></div>
   <div id="mapWrap">
     <div id="map"></div>
+    <div id="versionTag">v1.5.0</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
