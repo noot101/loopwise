@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Loopwise</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --moss:#3a5a40;
+    --moss-dark:#2c4530;
+    --sand:#f2ede4;
+    --bark:#5c4a3a;
+    --clay:#c77b4a;
+    --paper:#fffdf9;
+    --ink:#22271f;
+    --line:#d8d0c0;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--sand);
+    color:var(--ink);
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  #app{ display:flex; flex-direction:column; height:100%; }
+
+  header{
+    padding:14px 18px 10px;
+    background:var(--paper);
+    border-bottom:1px solid var(--line);
+  }
+  header h1{
+    margin:0; font-size:1.3rem; letter-spacing:-0.01em; color:var(--moss-dark);
+  }
+  header p{ margin:2px 0 0; font-size:0.85rem; color:var(--bark); }
+
+  #controls{
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    padding:12px 18px; background:var(--paper); border-bottom:1px solid var(--line);
+  }
+  #controls label{ font-size:0.85rem; color:var(--bark); }
+  #distance{
+    width:80px; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
+    font-size:1rem; background:var(--sand);
+  }
+  button{
+    border:none; border-radius:6px; padding:9px 16px; font-size:0.9rem;
+    cursor:pointer; font-weight:600; transition:opacity .15s;
+  }
+  button:disabled{ opacity:.5; cursor:default; }
+  #generate{ background:var(--moss); color:#fff; }
+  #generate:hover:not(:disabled){ opacity:.9; }
+
+  #map{ flex:1; min-height:0; }
+
+  #status{
+    padding:8px 18px; font-size:0.85rem; color:var(--bark); background:var(--paper);
+    min-height:1.2em;
+  }
+  #status.error{ color:#a4432b; }
+
+  #routePanel{
+    display:none; background:var(--paper); border-top:1px solid var(--line);
+    padding:12px 18px 16px;
+  }
+  #routePanel.open{ display:block; }
+  #routePanel h2{ margin:0 0 6px; font-size:1rem; color:var(--moss-dark); }
+  #routeStats{ display:flex; gap:18px; font-size:0.9rem; color:var(--ink); margin-bottom:10px; }
+  #routeStats b{ display:block; font-size:1.1rem; color:var(--moss-dark); }
+  #routePanel .actions{ display:flex; gap:8px; }
+  #startWalk{ background:var(--clay); color:#fff; }
+  #newRoutes{ background:transparent; color:var(--moss-dark); border:1px solid var(--moss); }
+
+  .route-line{ cursor:pointer; }
+
+  #keyModal{
+    position:fixed; inset:0; background:rgba(34,39,31,.6);
+    display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000;
+  }
+  #keyModal.hidden{ display:none; }
+  #keyBox{
+    background:var(--paper); border-radius:10px; padding:20px; max-width:360px; width:100%;
+  }
+  #keyBox h2{ margin-top:0; font-size:1.05rem; color:var(--moss-dark); }
+  #keyBox p{ font-size:0.85rem; color:var(--bark); line-height:1.4; }
+  #keyBox input{
+    width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:6px;
+    margin:10px 0; font-size:0.9rem;
+  }
+  #keyBox button{ background:var(--moss); color:#fff; width:100%; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Loopwise</h1>
+    <p>Een nieuw wandelrondje, elke keer vanaf waar je staat.</p>
+  </header>
+
+  <div id="controls">
+    <label for="distance">Afstand (km)</label>
+    <input type="number" id="distance" value="5" min="1" max="30" step="0.5">
+    <button id="generate">Genereer routes</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="map"></div>
+
+  <div id="routePanel">
+    <h2 id="routeTitle">Route</h2>
+    <div id="routeStats">
+      <div>Afstand<b id="statDist">–</b></div>
+      <div>Geschatte tijd<b id="statTime">–</b></div>
+    </div>
+    <div class="actions">
+      <button id="startWalk">Route vastleggen</button>
+      <button id="newRoutes">Nieuwe routes</button>
+    </div>
+  </div>
+</div>
+
+<div id="keyModal">
+  <div id="keyBox">
+    <h2>Openrouteservice API-key</h2>
+    <p>Loopwise gebruikt openrouteservice.org om routes te berekenen. Plak hier je gratis API-key (uit je HeiGIT/openrouteservice dashboard). Hij wordt alleen op je eigen telefoon opgeslagen.</p>
+    <input type="text" id="apiKeyInput" placeholder="jouw API-key">
+    <button id="saveKey">Opslaan</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const ORS_URL = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
+  const COLORS = ["#3a5a40", "#c77b4a", "#5c4a3a"];
+
+  let map, userMarker, routeLayers = [], selectedIndex = null, currentRoutes = [];
+  let userLatLng = null;
+  let apiKey = localStorage.getItem("loopwise_ors_key") || "";
+
+  const statusEl = document.getElementById("status");
+  const genBtn = document.getElementById("generate");
+  const distanceInput = document.getElementById("distance");
+  const routePanel = document.getElementById("routePanel");
+  const newRoutesBtn = document.getElementById("newRoutes");
+  const startWalkBtn = document.getElementById("startWalk");
+  const keyModal = document.getElementById("keyModal");
+
+  function setStatus(msg, isError){
+    statusEl.textContent = msg || "";
+    statusEl.classList.toggle("error", !!isError);
+  }
+
+  function initMap(lat, lon){
+    map = L.map("map").setView([lat, lon], 14);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap-bijdragers"
+    }).addTo(map);
+    userMarker = L.circleMarker([lat, lon], {
+      radius: 8, color: "#c77b4a", fillColor: "#c77b4a", fillOpacity: 1
+    }).addTo(map).bindPopup("Jouw startpunt");
+  }
+
+  function locate(){
+    setStatus("Je locatie wordt opgehaald…");
+    if(!navigator.geolocation){
+      setStatus("Deze browser ondersteunt geen locatiebepaling.", true);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        userLatLng = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        initMap(userLatLng.lat, userLatLng.lon);
+        setStatus("Locatie gevonden. Kies een afstand en genereer routes.");
+        genBtn.disabled = false;
+      },
+      err => {
+        setStatus("Kon je locatie niet ophalen: " + err.message + ". Sta locatietoegang toe en herlaad de pagina.", true);
+      },
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  }
+
+  function clearRoutes(){
+    routeLayers.forEach(l => map.removeLayer(l));
+    routeLayers = [];
+    currentRoutes = [];
+    selectedIndex = null;
+    routePanel.classList.remove("open");
+  }
+
+  async function fetchRoute(seed){
+    const body = {
+      coordinates: [[userLatLng.lon, userLatLng.lat]],
+      options: {
+        round_trip: {
+          length: Math.round(parseFloat(distanceInput.value) * 1000),
+          points: 4,
+          seed: seed
+        }
+      }
+    };
+    const resp = await fetch(ORS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": apiKey
+      },
+      body: JSON.stringify(body)
+    });
+    if(!resp.ok){
+      const text = await resp.text();
+      throw new Error("ORS-fout (" + resp.status + "): " + text.slice(0,200));
+    }
+    return resp.json();
+  }
+
+  async function generateRoutes(){
+    if(!apiKey){
+      keyModal.classList.remove("hidden");
+      return;
+    }
+    if(!userLatLng){
+      setStatus("Nog geen locatie beschikbaar.", true);
+      return;
+    }
+    genBtn.disabled = true;
+    clearRoutes();
+    setStatus("Routes worden berekend…");
+
+    try{
+      const seeds = [
+        Math.floor(Math.random()*100000),
+        Math.floor(Math.random()*100000),
+        Math.floor(Math.random()*100000)
+      ];
+      const results = await Promise.allSettled(seeds.map(fetchRoute));
+      let ok = 0;
+      results.forEach((r, i) => {
+        if(r.status === "fulfilled"){
+          const geojson = r.value;
+          const feature = geojson.features[0];
+          const dist = feature.properties.summary.distance;
+          const dur = feature.properties.summary.duration;
+          const layer = L.geoJSON(feature, {
+            style: { color: COLORS[i % COLORS.length], weight: 5, opacity: 0.55 }
+          }).addTo(map);
+          layer.on("click", () => selectRoute(i));
+          layer._loopwiseIndex = i;
+          routeLayers.push(layer);
+          currentRoutes.push({ distance: dist, duration: dur, layer });
+          ok++;
+        }
+      });
+      if(ok === 0){
+        setStatus("Geen routes gevonden. Probeer een andere afstand.", true);
+      } else {
+        setStatus(ok + " route(s) gevonden. Tik op een lijn op de kaart om te kiezen.");
+        const group = new L.featureGroup(routeLayers);
+        map.fitBounds(group.getBounds().pad(0.1));
+      }
+    } catch(e){
+      setStatus("Er ging iets mis: " + e.message, true);
+    } finally {
+      genBtn.disabled = false;
+    }
+  }
+
+  function selectRoute(i){
+    selectedIndex = i;
+    routeLayers.forEach((l, idx) => {
+      l.setStyle({ weight: idx === i ? 7 : 5, opacity: idx === i ? 0.95 : 0.35 });
+    });
+    const r = currentRoutes[i];
+    document.getElementById("routeTitle").textContent = "Route " + (i+1);
+    document.getElementById("statDist").textContent = (r.distance/1000).toFixed(1) + " km";
+    document.getElementById("statTime").textContent = Math.round(r.duration/60) + " min";
+    routePanel.classList.add("open");
+  }
+
+  function saveWalk(){
+    if(selectedIndex === null) return;
+    const r = currentRoutes[selectedIndex];
+    const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
+    log.push({
+      date: new Date().toISOString(),
+      distanceKm: +(r.distance/1000).toFixed(2),
+      durationMin: Math.round(r.duration/60)
+    });
+    localStorage.setItem("loopwise_log", JSON.stringify(log));
+    setStatus("Route vastgelegd in je overzicht. (" + log.length + " wandelingen totaal)");
+  }
+
+  genBtn.addEventListener("click", generateRoutes);
+  newRoutesBtn.addEventListener("click", generateRoutes);
+  startWalkBtn.addEventListener("click", saveWalk);
+
+  document.getElementById("saveKey").addEventListener("click", () => {
+    const val = document.getElementById("apiKeyInput").value.trim();
+    if(!val){ return; }
+    apiKey = val;
+    localStorage.setItem("loopwise_ors_key", val);
+    keyModal.classList.add("hidden");
+    generateRoutes();
+  });
+
+  genBtn.disabled = true;
+  locate();
+})();
+</script>
+</body>
+</html>
