@@ -112,19 +112,24 @@
     margin:10px 0; font-size:0.9rem;
   }
   #keyBox button{ background:var(--moss); color:#fff; width:100%; }
-  #logList{ font-size:0.9rem; }
+  #logList{ font-size:0.85rem; }
   .log-entry{
-    display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:center; gap:8px;
+    padding:8px 0; border-bottom:1px solid var(--line); flex-wrap:nowrap;
   }
   .log-entry:last-child{ border-bottom:none; }
-  .log-empty{ color:var(--bark); font-size:0.85rem; }
-  .log-right{ display:inline-flex; align-items:center; gap:8px; }
-  .delete-entry{
-    background:transparent; color:var(--line); border:none; font-size:0.95rem;
-    padding:2px 4px; cursor:pointer; font-weight:400; line-height:1;
-    transition:color .15s;
+  .log-entry > span:first-child{
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
-  .delete-entry:hover, .delete-entry:active{ color:#a4432b; }
+  .log-empty{ color:var(--bark); font-size:0.85rem; }
+  .log-right{ display:inline-flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap; }
+  #logList .delete-entry{
+    width:18px; height:18px; min-width:18px; padding:0; margin:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:transparent; color:var(--bark); border:1px solid var(--line); border-radius:4px;
+    font-size:0.7rem; cursor:pointer; line-height:1; transition:color .15s, border-color .15s;
+  }
+  #logList .delete-entry:hover, #logList .delete-entry:active{ color:#a4432b; border-color:#a4432b; }
   #status{ display:flex; align-items:center; gap:10px; }
   #retryLocate{ background:var(--clay); color:#fff; padding:5px 10px; font-size:0.8rem; }
 
@@ -159,7 +164,7 @@
   <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v1.9.1</div>
+    <div id="versionTag">v1.9.2</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
