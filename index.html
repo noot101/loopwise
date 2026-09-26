@@ -118,6 +118,12 @@
   }
   .log-entry:last-child{ border-bottom:none; }
   .log-empty{ color:var(--bark); font-size:0.85rem; }
+  .delete-entry{
+    background:transparent; color:#a4432b; border:none; font-size:1rem;
+    padding:0 0 0 8px; cursor:pointer; font-weight:700; line-height:1;
+  }
+  #status{ display:flex; align-items:center; gap:10px; }
+  #retryLocate{ background:var(--clay); color:#fff; padding:5px 10px; font-size:0.8rem; }
 </style>
 </head>
 <body>
@@ -136,10 +142,10 @@
     <button id="showLog" style="background:transparent;color:var(--moss-dark);border:1px solid var(--moss);">Mijn wandelingen</button>
   </div>
 
-  <div id="status"></div>
+  <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v1.7.0</div>
+    <div id="versionTag">v1.8.0</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
@@ -188,9 +194,10 @@
   const distanceValue = document.getElementById("distanceValue");
   const keyModal = document.getElementById("keyModal");
 
-  function setStatus(msg, isError){
-    statusEl.textContent = msg || "";
+  function setStatus(msg, isError, showRetry){
+    document.getElementById("statusText").textContent = msg || "";
     statusEl.classList.toggle("error", !!isError);
+    document.getElementById("retryLocate").style.display = showRetry ? "inline-block" : "none";
   }
 
   // Hoe streng we op de afstand mikken: kleiner rondje mag relatief meer afwijken,
@@ -222,6 +229,10 @@
       setStatus("Deze browser ondersteunt geen locatiebepaling.", true);
       return;
     }
+    if(!navigator.onLine){
+      setStatus("Je bent offline. Zet je internetverbinding aan en probeer opnieuw.", true, true);
+      return;
+    }
     navigator.geolocation.getCurrentPosition(
       pos => {
         userLatLng = { lat: pos.coords.latitude, lon: pos.coords.longitude };
@@ -230,11 +241,23 @@
         genBtn.disabled = false;
       },
       err => {
-        setStatus("Kon je locatie niet ophalen: " + err.message + ". Sta locatietoegang toe en herlaad de pagina.", true);
+        let msg = "Kon je locatie niet ophalen.";
+        if(err.code === err.PERMISSION_DENIED){
+          msg = "Locatietoegang is geweigerd. Zet dit aan bij de site-instellingen van je browser.";
+        } else if(err.code === err.POSITION_UNAVAILABLE){
+          msg = "Je locatie kon niet bepaald worden. Sta buiten of bij een raam meestal beter.";
+        } else if(err.code === err.TIMEOUT){
+          msg = "Het ophalen van je locatie duurde te lang.";
+        }
+        setStatus(msg, true, true);
       },
       { enableHighAccuracy: true, timeout: 15000 }
     );
   }
+  document.getElementById("retryLocate").addEventListener("click", locate);
+
+  window.addEventListener("offline", () => setStatus("Je bent offline. Routes berekenen kan pas weer als je internet hebt.", true));
+  window.addEventListener("online", () => setStatus("Weer online."));
 
   function clearRoutes(){
     routeLayers.forEach(l => map.removeLayer(l));
@@ -268,6 +291,12 @@
       body: JSON.stringify(body)
     });
     if(!resp.ok){
+      if(resp.status === 401 || resp.status === 403){
+        throw Object.assign(new Error("Je openrouteservice-key lijkt ongeldig te zijn."), { friendly: true });
+      }
+      if(resp.status === 429){
+        throw Object.assign(new Error("Dagquota van openrouteservice is bereikt (2000/dag). Probeer morgen opnieuw."), { friendly: true });
+      }
       const text = await resp.text();
       throw new Error("ORS-fout (" + resp.status + "): " + text.slice(0,200));
     }
@@ -284,6 +313,7 @@
       try{
         geojson = await fetchRoute(targetMeters, seed);
       } catch(e){
+        if(e.friendly) throw e;
         if(attempt === MAX_ATTEMPTS_PER_ROUTE - 1 && !best) throw e;
         continue;
       }
@@ -309,6 +339,12 @@
       setStatus("Nog geen locatie beschikbaar.", true);
       return;
     }
+    if(!navigator.onLine){
+      setStatus("Je bent offline. Zet je internetverbinding aan en probeer opnieuw.", true);
+      genBtn.disabled = false;
+      return;
+    }
+
     genBtn.disabled = true;
     clearRoutes();
     setStatus("Routes worden berekend…");
@@ -337,7 +373,8 @@
         }
       });
       if(ok === 0){
-        setStatus("Geen routes gevonden. Probeer een andere afstand.", true);
+        const friendlyFail = results.find(r => r.status === "rejected" && r.reason && r.reason.friendly);
+        setStatus(friendlyFail ? friendlyFail.reason.message : "Geen routes gevonden. Probeer een andere afstand.", true);
       } else {
         setStatus(ok + " route(s) gevonden, dicht bij " + km.toFixed(1) + " km. Tik op een lijn om de details te zien.");
         const group = new L.featureGroup(routeLayers);
@@ -399,7 +436,14 @@
         lastWalkPos = here;
         map.panTo([here.lat, here.lon], { animate: true });
       },
-      err => setStatus("Kon je positie niet volgen: " + err.message, true),
+      err => {
+        if(err.code === err.PERMISSION_DENIED){
+          setStatus("Locatietoegang is uitgezet tijdens het lopen. Wandeling gestopt.", true);
+          stopWalk();
+        } else {
+          setStatus("Even geen GPS-signaal, ik probeer het opnieuw.", true);
+        }
+      },
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
     );
   }
@@ -440,10 +484,20 @@
     list.innerHTML = log.slice().reverse().map(entry => {
       const d = new Date(entry.date);
       const dateStr = d.toLocaleDateString("nl-NL", { day:"numeric", month:"short", year:"numeric" });
-      return '<div class="log-entry"><span>' + dateStr + '</span><span>' +
-        entry.distanceKm.toFixed(1) + ' km &middot; ' + entry.durationMin + ' min</span></div>';
+      return '<div class="log-entry" data-date="' + entry.date + '"><span>' + dateStr + '</span><span>' +
+        entry.distanceKm.toFixed(1) + ' km &middot; ' + entry.durationMin + ' min ' +
+        '<button class="delete-entry" title="Verwijderen" data-date="' + entry.date + '">&times;</button></span></div>';
     }).join("");
   }
+
+  document.getElementById("logList").addEventListener("click", e => {
+    if(!e.target.classList.contains("delete-entry")) return;
+    const dateToRemove = e.target.getAttribute("data-date");
+    let log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
+    log = log.filter(entry => entry.date !== dateToRemove);
+    localStorage.setItem("loopwise_log", JSON.stringify(log));
+    renderLog();
+  });
 
   document.getElementById("showLog").addEventListener("click", () => {
     renderLog();
