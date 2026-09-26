@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Loopwise</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3a5a40">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Loopwise">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
@@ -132,12 +139,12 @@
   <div id="status"></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v1.6.0</div>
+    <div id="versionTag">v1.7.0</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
       <span class="stat planOnly">± <b id="statTime">–</b> min</span>
-      <span class="stat walkOnly" style="display:none;">Onderweg: <b id="walkedDist">0.0</b> km</span>
+      <span class="stat walkOnly" style="display:none;">Onderweg: <b id="walkedDist">0.00</b> km</span>
       <button id="startWalkBtn">Start wandeling</button>
       <button id="stopWalkBtn">Stop</button>
     </div>
@@ -373,7 +380,7 @@
     walkedMeters = 0;
     lastWalkPos = null;
     walkStartTime = Date.now();
-    document.getElementById("walkedDist").textContent = "0.0";
+    document.getElementById("walkedDist").textContent = "0.00";
     document.getElementById("routeInfo").classList.add("walking");
     watchId = navigator.geolocation.watchPosition(
       pos => {
@@ -387,7 +394,7 @@
         }
         if(lastWalkPos){
           walkedMeters += haversine(lastWalkPos, here);
-          document.getElementById("walkedDist").textContent = (walkedMeters/1000).toFixed(1);
+          document.getElementById("walkedDist").textContent = (walkedMeters/1000).toFixed(2);
         }
         lastWalkPos = here;
         map.panTo([here.lat, here.lon], { animate: true });
@@ -463,6 +470,10 @@
     keyModal.classList.remove("hidden");
   } else {
     locate();
+  }
+
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("sw.js").catch(() => {});
   }
 })();
 </script>
