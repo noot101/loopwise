@@ -89,13 +89,14 @@
   }
   #status.error{ color:#a4432b; }
 
-  #keyModal{
+  #keyModal, #logModal{
     position:fixed; inset:0; background:rgba(34,39,31,.6);
     display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000;
   }
-  #keyModal.hidden{ display:none; }
+  #keyModal.hidden, #logModal.hidden{ display:none; }
   #keyBox{
     background:var(--paper); border-radius:10px; padding:20px; max-width:360px; width:100%;
+    max-height:80vh; overflow-y:auto;
   }
   #keyBox h2{ margin-top:0; font-size:1.05rem; color:var(--moss-dark); }
   #keyBox p{ font-size:0.85rem; color:var(--bark); line-height:1.4; }
@@ -104,6 +105,12 @@
     margin:10px 0; font-size:0.9rem;
   }
   #keyBox button{ background:var(--moss); color:#fff; width:100%; }
+  #logList{ font-size:0.9rem; }
+  .log-entry{
+    display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);
+  }
+  .log-entry:last-child{ border-bottom:none; }
+  .log-empty{ color:var(--bark); font-size:0.85rem; }
 </style>
 </head>
 <body>
@@ -119,12 +126,13 @@
       <input type="range" id="distance" value="5" min="1" max="20" step="0.1">
     </div>
     <button id="generate">Genereer routes</button>
+    <button id="showLog" style="background:transparent;color:var(--moss-dark);border:1px solid var(--moss);">Mijn wandelingen</button>
   </div>
 
   <div id="status"></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v1.5.0</div>
+    <div id="versionTag">v1.6.0</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
@@ -146,6 +154,15 @@
   </div>
 </div>
 
+<div id="logModal" class="hidden">
+  <div id="keyBox">
+    <h2>Mijn wandelingen</h2>
+    <div id="logTotals" style="font-size:0.85rem;color:var(--bark);margin-bottom:8px;"></div>
+    <div id="logList"></div>
+    <button id="closeLog" style="margin-top:12px;">Sluiten</button>
+  </div>
+</div>
+
 <script>
 (function(){
   const ORS_URL = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
@@ -156,7 +173,7 @@
   let userLatLng = null;
   let apiKey = localStorage.getItem("loopwise_ors_key") || "";
   let mapKey = localStorage.getItem("loopwise_map_key") || "";
-  let watchId = null, liveMarker = null, walkedMeters = 0, lastWalkPos = null;
+  let watchId = null, liveMarker = null, walkedMeters = 0, lastWalkPos = null, walkStartTime = null;
 
   const statusEl = document.getElementById("status");
   const genBtn = document.getElementById("generate");
@@ -355,6 +372,7 @@
     if(!navigator.geolocation) return;
     walkedMeters = 0;
     lastWalkPos = null;
+    walkStartTime = Date.now();
     document.getElementById("walkedDist").textContent = "0.0";
     document.getElementById("routeInfo").classList.add("walking");
     watchId = navigator.geolocation.watchPosition(
@@ -385,10 +403,48 @@
       watchId = null;
     }
     document.getElementById("routeInfo").classList.remove("walking");
+    if(walkedMeters >= 50 && walkStartTime){
+      const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
+      log.push({
+        date: new Date().toISOString(),
+        distanceKm: +(walkedMeters/1000).toFixed(2),
+        durationMin: Math.max(1, Math.round((Date.now() - walkStartTime) / 60000))
+      });
+      localStorage.setItem("loopwise_log", JSON.stringify(log));
+      setStatus("Wandeling opgeslagen: " + (walkedMeters/1000).toFixed(1) + " km. Bekijk 'm via 'Mijn wandelingen'.");
+    }
+    walkStartTime = null;
   }
 
   document.getElementById("startWalkBtn").addEventListener("click", startWalk);
   document.getElementById("stopWalkBtn").addEventListener("click", stopWalk);
+
+  function renderLog(){
+    const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
+    const list = document.getElementById("logList");
+    const totals = document.getElementById("logTotals");
+    if(log.length === 0){
+      totals.textContent = "";
+      list.innerHTML = '<p class="log-empty">Nog geen wandelingen vastgelegd.</p>';
+      return;
+    }
+    const totalKm = log.reduce((sum, e) => sum + e.distanceKm, 0);
+    totals.textContent = log.length + " wandeling(en) — totaal " + totalKm.toFixed(1) + " km";
+    list.innerHTML = log.slice().reverse().map(entry => {
+      const d = new Date(entry.date);
+      const dateStr = d.toLocaleDateString("nl-NL", { day:"numeric", month:"short", year:"numeric" });
+      return '<div class="log-entry"><span>' + dateStr + '</span><span>' +
+        entry.distanceKm.toFixed(1) + ' km &middot; ' + entry.durationMin + ' min</span></div>';
+    }).join("");
+  }
+
+  document.getElementById("showLog").addEventListener("click", () => {
+    renderLog();
+    document.getElementById("logModal").classList.remove("hidden");
+  });
+  document.getElementById("closeLog").addEventListener("click", () => {
+    document.getElementById("logModal").classList.add("hidden");
+  });
 
   document.getElementById("saveKey").addEventListener("click", () => {
     const orsVal = document.getElementById("apiKeyInput").value.trim();
