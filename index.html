@@ -118,16 +118,30 @@
   }
   .log-entry:last-child{ border-bottom:none; }
   .log-empty{ color:var(--bark); font-size:0.85rem; }
+  .log-right{ display:inline-flex; align-items:center; gap:8px; }
   .delete-entry{
-    background:transparent; color:#a4432b; border:none; font-size:1rem;
-    padding:0 0 0 8px; cursor:pointer; font-weight:700; line-height:1;
+    background:transparent; color:var(--line); border:none; font-size:0.95rem;
+    padding:2px 4px; cursor:pointer; font-weight:400; line-height:1;
+    transition:color .15s;
   }
+  .delete-entry:hover, .delete-entry:active{ color:#a4432b; }
   #status{ display:flex; align-items:center; gap:10px; }
   #retryLocate{ background:var(--clay); color:#fff; padding:5px 10px; font-size:0.8rem; }
+
+  #updateBanner{
+    display:none; align-items:center; justify-content:space-between; gap:12px;
+    background:var(--moss-dark); color:#fff; padding:9px 18px; font-size:0.85rem;
+  }
+  #updateBanner.show{ display:flex; }
+  #updateBanner button{ background:#fff; color:var(--moss-dark); padding:5px 12px; font-size:0.8rem; }
 </style>
 </head>
 <body>
 <div id="app">
+  <div id="updateBanner">
+    <span>Er is een nieuwe versie van Loopwise.</span>
+    <button id="updateBtn">Vernieuwen</button>
+  </div>
   <header>
     <h1>Loopwise</h1>
     <p>Een nieuw wandelrondje, elke keer vanaf waar je staat.</p>
@@ -145,7 +159,7 @@
   <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v1.8.0</div>
+    <div id="versionTag">v1.9.1</div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
       <span class="stat planOnly"><b id="statDist">–</b> km</span>
@@ -457,7 +471,7 @@
     if(walkedMeters >= 50 && walkStartTime){
       const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
       log.push({
-        date: new Date().toISOString(),
+        date: new Date(walkStartTime).toISOString(),
         distanceKm: +(walkedMeters/1000).toFixed(2),
         durationMin: Math.max(1, Math.round((Date.now() - walkStartTime) / 60000))
       });
@@ -484,9 +498,12 @@
     list.innerHTML = log.slice().reverse().map(entry => {
       const d = new Date(entry.date);
       const dateStr = d.toLocaleDateString("nl-NL", { day:"numeric", month:"short", year:"numeric" });
-      return '<div class="log-entry" data-date="' + entry.date + '"><span>' + dateStr + '</span><span>' +
-        entry.distanceKm.toFixed(1) + ' km &middot; ' + entry.durationMin + ' min ' +
-        '<button class="delete-entry" title="Verwijderen" data-date="' + entry.date + '">&times;</button></span></div>';
+      const timeStr = d.toLocaleTimeString("nl-NL", { hour:"2-digit", minute:"2-digit" });
+      return '<div class="log-entry" data-date="' + entry.date + '">' +
+        '<span>' + dateStr + ', ' + timeStr + '</span>' +
+        '<span class="log-right">' + entry.distanceKm.toFixed(1) + ' km &middot; ' + entry.durationMin + ' min' +
+        '<button class="delete-entry" title="Verwijderen" data-date="' + entry.date + '">&times;</button></span>' +
+        '</div>';
     }).join("");
   }
 
@@ -527,7 +544,33 @@
   }
 
   if("serviceWorker" in navigator){
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js").then(reg => {
+      // Meteen bij openen checken of er een nieuwere sw.js is.
+      reg.update();
+      // Ook checken zodra je de app weer opent vanuit de achtergrond.
+      document.addEventListener("visibilitychange", () => {
+        if(document.visibilityState === "visible") reg.update();
+      });
+      reg.addEventListener("updatefound", () => {
+        const newWorker = reg.installing;
+        if(!newWorker) return;
+        newWorker.addEventListener("statechange", () => {
+          if(newWorker.state === "installed" && navigator.serviceWorker.controller){
+            document.getElementById("updateBanner").classList.add("show");
+          }
+        });
+      });
+      document.getElementById("updateBtn").addEventListener("click", () => {
+        if(reg.waiting) reg.waiting.postMessage("skipWaiting");
+      });
+    }).catch(() => {});
+
+    let refreshed = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if(refreshed) return;
+      refreshed = true;
+      window.location.reload();
+    });
   }
 })();
 </script>

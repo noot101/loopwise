@@ -1,11 +1,18 @@
-const CACHE_NAME = "loopwise-v1.8.0";
+const CACHE_NAME = "loopwise-v1.9.1";
 const PRECACHE = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE))
   );
-  self.skipWaiting();
+  // Bewust GEEN skipWaiting hier: de nieuwe versie wacht tot de gebruiker
+  // op "Vernieuwen" tikt, zodat je niet ongevraagd mid-wandeling herstart.
+});
+
+self.addEventListener("message", event => {
+  if(event.data === "skipWaiting"){
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", event => {
@@ -23,13 +30,11 @@ self.addEventListener("fetch", event => {
   if(url.origin !== self.location.origin || event.request.method !== "GET"){
     return;
   }
+  // Network-first: probeer altijd de nieuwste versie, val terug op cache als offline.
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      const network = fetch(event.request).then(resp => {
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
-        return resp;
-      }).catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request).then(resp => {
+      caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
+      return resp;
+    }).catch(() => caches.match(event.request))
   );
 });
