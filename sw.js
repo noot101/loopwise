@@ -1,4 +1,4 @@
-const CACHE_NAME = "loopwise-v1.9.2";
+const CACHE_NAME = "loopwise-v2.0.0";
 const PRECACHE = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", event => {
