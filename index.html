@@ -142,6 +142,9 @@
   #status{ display:flex; align-items:center; gap:10px; }
   #retryLocate{ background:var(--clay); color:#fff; padding:5px 10px; font-size:0.8rem; }
 
+  .dirArrow{ background:none; border:none; }
+  .dirArrow svg{ display:block; filter:drop-shadow(0 0 1px rgba(0,0,0,.6)); }
+  #navInstruction.detour{ background:var(--clay); }
   #updateBanner{
     display:none; align-items:center; justify-content:space-between; gap:12px;
     background:var(--moss-dark); color:#fff; padding:9px 18px; font-size:0.85rem;
@@ -173,7 +176,7 @@
   <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v2.2.0</div>
+    <div id="versionTag">v2.4.0</div>
     <div id="navInstruction"><span id="navText"></span><span class="dist" id="navDist"></span></div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
@@ -219,6 +222,12 @@
   let walkedPath = null, walkedLatLngs = [];
   const WALKED_COLOR = "#9333ea";
   let navSteps = [], navIndex = 0;
+  let routeArrowGroups = [];
+  let routePts = [], baseNavSteps = [], mode = "route", lastAlong = 0, offRouteCount = 0;
+  let rerouting = false, detourLayer = null, detourTarget = null, detourMin = Infinity, lastRerouteTry = 0;
+  const OFF_ROUTE_M = 40;      // meter afwijking voordat we omleiden
+  const REJOIN_AHEAD_M = 120;  // meter vooruit op de route waar de omleiding op aansluit
+  const ARROW_SPACING_M = 400; // afstand tussen richtingpijlen
   const ANNOUNCE_DIST = 30; // meter: op deze afstand van de afslag spreken we 'm uit
 
   const statusEl = document.getElementById("status");
@@ -295,6 +304,8 @@
   function clearRoutes(){
     routeLayers.forEach(l => map.removeLayer(l));
     routeLayers = [];
+    routeArrowGroups.forEach(g => map.removeLayer(g));
+    routeArrowGroups = [];
     currentRoutes = [];
     selectedIndex = null;
     document.getElementById("routeInfo").classList.remove("open", "walking");
@@ -307,6 +318,7 @@
     walkedLatLngs = [];
     navSteps = [];
     navIndex = 0;
+    resetReroute();
     document.getElementById("navInstruction").classList.remove("show");
     if("speechSynthesis" in window) window.speechSynthesis.cancel();
   }
@@ -372,6 +384,152 @@
     return best;
   }
 
+  // ---- Richtingpijlen + omleiden ----
+  function bearingBetween(a, b){
+    const toRad = d => d * Math.PI / 180;
+    const y = Math.sin(toRad(b.lon - a.lon)) * Math.cos(toRad(b.lat));
+    const x = Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
+              Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lon - a.lon));
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  // Routepunten met afgelegde afstand (cum, in meters) vanaf de start.
+  function buildRoutePts(feature){
+    let cum = 0, prev = null;
+    return feature.geometry.coordinates.map(c => {
+      const p = { lat: c[1], lon: c[0], cum: 0 };
+      if(prev) cum += haversine(prev, p);
+      p.cum = cum;
+      prev = p;
+      return p;
+    });
+  }
+
+  // Punt op afstand d (meter) langs de route.
+  function pointAt(pts, d){
+    const total = pts[pts.length-1].cum;
+    d = Math.max(0, Math.min(total, d));
+    for(let i = 0; i < pts.length - 1; i++){
+      const A = pts[i], B = pts[i+1];
+      if(d <= B.cum){
+        const t = B.cum > A.cum ? (d - A.cum) / (B.cum - A.cum) : 0;
+        return { lat: A.lat + t*(B.lat - A.lat), lon: A.lon + t*(B.lon - A.lon), along: d };
+      }
+    }
+    const L0 = pts[pts.length-1];
+    return { lat: L0.lat, lon: L0.lon, along: total };
+  }
+
+  function addDirectionArrows(feature, color){
+    const group = L.layerGroup();
+    const pts = buildRoutePts(feature);
+    const total = pts[pts.length-1].cum;
+    for(let d = ARROW_SPACING_M / 2; d < total - 50; d += ARROW_SPACING_M){
+      const p = pointAt(pts, d);
+      const deg = bearingBetween(pointAt(pts, d - 15), pointAt(pts, d + 15));
+      const icon = L.divIcon({
+        className: "dirArrow",
+        html: '<svg width="18" height="18" viewBox="0 0 16 16" style="transform:rotate(' + deg.toFixed(0) + 'deg)">' +
+              '<path d="M8 1 L14 14 L8 11 L2 14 Z" fill="#fff" stroke="' + color + '" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+        iconSize: [18, 18], iconAnchor: [9, 9]
+      });
+      L.marker([p.lat, p.lon], { icon: icon, interactive: false, keyboard: false }).addTo(group);
+    }
+    return group.addTo(map);
+  }
+
+  // Dichtstbijzijnde punt op de route (projectie op lijnsegmenten, in lokale meters).
+  // minAlong/maxAlong beperken het zoekgebied zodat een rondje (start = einde) niet verwart.
+  function nearestPointOnRoute(here, minAlong, maxAlong){
+    minAlong = minAlong === undefined ? -Infinity : minAlong;
+    maxAlong = maxAlong === undefined ? Infinity : maxAlong;
+    const M = 111195, k = Math.cos(here.lat * Math.PI / 180);
+    let best = null;
+    for(let i = 0; i < routePts.length - 1; i++){
+      const A = routePts[i], B = routePts[i+1];
+      if(B.cum < minAlong || A.cum > maxAlong) continue;
+      const ax = (A.lon - here.lon)*k*M, ay = (A.lat - here.lat)*M;
+      const bx = (B.lon - here.lon)*k*M, by = (B.lat - here.lat)*M;
+      const dx = bx - ax, dy = by - ay, len2 = dx*dx + dy*dy;
+      let t = len2 ? -(ax*dx + ay*dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const dist = Math.hypot(ax + t*dx, ay + t*dy);
+      if(!best || dist < best.dist) best = { dist: dist, along: A.cum + t*(B.cum - A.cum) };
+    }
+    return best;
+  }
+
+  function resetReroute(){
+    if(detourLayer && map){ map.removeLayer(detourLayer); }
+    detourLayer = null; detourTarget = null; detourMin = Infinity;
+    mode = "route"; rerouting = false; lastRerouteTry = 0;
+    routePts = []; baseNavSteps = []; lastAlong = 0; offRouteCount = 0;
+    document.getElementById("navInstruction").classList.remove("detour");
+  }
+
+  function rejoinRoute(along){
+    if(detourLayer){ map.removeLayer(detourLayer); detourLayer = null; }
+    navSteps = baseNavSteps;
+    const next = navSteps.findIndex(st => st.along >= along - 10);
+    navIndex = next === -1 ? navSteps.length : next;
+    mode = "route"; lastAlong = along; offRouteCount = 0; detourTarget = null;
+    document.getElementById("navInstruction").classList.remove("detour");
+    setStatus("Je bent weer op de route.");
+  }
+
+  function checkRoute(here){
+    if(!routePts.length || rerouting) return;
+    const np = nearestPointOnRoute(here, lastAlong - 50, lastAlong + 800) || nearestPointOnRoute(here);
+    if(!np) return;
+    const cooldownOver = Date.now() - lastRerouteTry > 15000;
+    if(mode === "route"){
+      if(np.dist <= OFF_ROUTE_M){ offRouteCount = 0; lastAlong = np.along; return; }
+      offRouteCount++;
+      if(offRouteCount >= 2 && cooldownOver) startReroute(here, np);
+    } else {
+      const d = haversine(here, detourTarget);
+      if(np.dist <= 20){ rejoinRoute(np.along); return; }
+      if(d <= 25){ rejoinRoute(detourTarget.along); return; }
+      detourMin = Math.min(detourMin, d);
+      if(d > detourMin + 60 && cooldownOver) startReroute(here, np); // je loopt van de omleiding af
+    }
+  }
+
+  async function startReroute(here, np){
+    rerouting = true;
+    lastRerouteTry = Date.now();
+    setStatus("Je bent van de route af. Omleiding wordt berekend…");
+    const target = pointAt(routePts, np.along + REJOIN_AHEAD_M);
+    try{
+      const resp = await fetch(ORS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": apiKey },
+        body: JSON.stringify({
+          coordinates: [[here.lon, here.lat], [target.lon, target.lat]],
+          instructions: true,
+          language: "nl"
+        })
+      });
+      if(!resp.ok) throw new Error("ORS-fout (" + resp.status + ")");
+      const f = (await resp.json()).features[0];
+      if(!routePts.length) return; // wandeling is ondertussen gestopt
+      if(detourLayer) map.removeLayer(detourLayer);
+      detourLayer = L.geoJSON(f, { style: { color: "#f97316", weight: 5, opacity: 0.95, dashArray: "8 8" } }).addTo(map);
+      detourTarget = target;
+      detourMin = Infinity;
+      mode = "detour";
+      const st = buildNavSteps(f);
+      navSteps = st.length > 1 ? st.slice(0, -1) : st; // "aangekomen"-stap weglaten
+      navIndex = 0;
+      document.getElementById("navInstruction").classList.add("detour");
+      setStatus("Omleiding gevonden: volg de oranje lijn terug naar je route.");
+    } catch(e){
+      setStatus("Kon geen omleiding berekenen. Loop terug richting de route.", true);
+    } finally {
+      rerouting = false;
+    }
+  }
+
   async function generateRoutes(){
     if(!apiKey){
       keyModal.classList.remove("hidden");
@@ -408,8 +566,10 @@
           const layer = L.geoJSON(feature, {
             style: { color: COLORS[i % COLORS.length], weight: 6, opacity: 0.85 }
           }).addTo(map);
-          layer.on("click", () => selectRoute(i));
+          const idx = routeLayers.length;
+          layer.on("click", () => selectRoute(idx));
           routeLayers.push(layer);
+          routeArrowGroups.push(addDirectionArrows(feature, COLORS[i % COLORS.length]));
           currentRoutes.push({ distance: dist, duration: duration, feature: feature });
           ok++;
         }
@@ -434,6 +594,7 @@
     routeLayers.forEach((l, idx) => {
       l.setStyle({ weight: idx === i ? 8 : 6, opacity: idx === i ? 1 : 0.4 });
     });
+    routeArrowGroups.forEach((g, idx) => g.eachLayer(m => m.setOpacity(idx === i ? 1 : 0.4)));
     const r = currentRoutes[i];
     document.getElementById("routeLabel").textContent = "Route " + (i+1);
     document.getElementById("statDist").textContent = (r.distance/1000).toFixed(1);
@@ -468,7 +629,7 @@
     if(wakeLock){ wakeLock.release().catch(()=>{}); wakeLock = null; }
   }
 
-  function buildNavSteps(feature){
+  function buildNavSteps(feature, pts){
     try{
       const coords = feature.geometry.coordinates; // [lon, lat] per punt
       const segment = feature.properties.segments[0];
@@ -476,7 +637,8 @@
         .filter(s => s.way_points && s.instruction)
         .map(s => {
           const pt = coords[s.way_points[0]];
-          return { lat: pt[1], lon: pt[0], instruction: s.instruction };
+          return { lat: pt[1], lon: pt[0], instruction: s.instruction,
+                   along: pts && pts[s.way_points[0]] ? pts[s.way_points[0]].cum : 0 };
         });
     } catch(e){
       return [];
@@ -507,8 +669,34 @@
     }
   }
 
+  function isNative(){
+    return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  }
+
+  // Verwerkt één GPS-punt, of die nu van de browser of van de native
+  // achtergrond-plugin komt — zelfde logica voor kaart, spoor en navigatie.
+  function handlePosition(here){
+    if(!liveMarker){
+      liveMarker = L.circleMarker([here.lat, here.lon], {
+        radius: 9, color: "#fff", weight: 2, fillColor: WALKED_COLOR, fillOpacity: 1
+      }).addTo(map);
+    } else {
+      liveMarker.setLatLng([here.lat, here.lon]);
+    }
+    walkedLatLngs.push([here.lat, here.lon]);
+    walkedPath.setLatLngs(walkedLatLngs);
+    if(lastWalkPos){
+      walkedMeters += haversine(lastWalkPos, here);
+      document.getElementById("walkedDist").textContent = (walkedMeters/1000).toFixed(2);
+    }
+    lastWalkPos = here;
+    checkRoute(here);
+    updateNav(here);
+    map.panTo([here.lat, here.lon], { animate: true });
+  }
+
   function startWalk(){
-    if(!navigator.geolocation || selectedIndex === null) return;
+    if(selectedIndex === null) return;
     walkedMeters = 0;
     lastWalkPos = null;
     walkStartTime = Date.now();
@@ -516,52 +704,64 @@
     if(walkedPath){ map.removeLayer(walkedPath); }
     walkedPath = L.polyline([], { color: WALKED_COLOR, weight: 5, opacity: 0.9 }).addTo(map);
 
-    navSteps = buildNavSteps(currentRoutes[selectedIndex].feature);
+    resetReroute();
+    const feat = currentRoutes[selectedIndex].feature;
+    routePts = buildRoutePts(feat);
+    navSteps = buildNavSteps(feat, routePts);
+    baseNavSteps = navSteps;
     navIndex = 0;
 
     // De niet-gekozen routes van de kaart halen, dat is verwarrend tijdens het lopen.
     routeLayers.forEach((l, idx) => {
       if(idx !== selectedIndex) map.removeLayer(l);
     });
-
-    requestWakeLock();
+    routeArrowGroups.forEach((g, idx) => { if(idx !== selectedIndex) map.removeLayer(g); });
 
     document.getElementById("walkedDist").textContent = "0.00";
     document.getElementById("routeInfo").classList.add("walking");
-    watchId = navigator.geolocation.watchPosition(
-      pos => {
-        const here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-        if(!liveMarker){
-          liveMarker = L.circleMarker([here.lat, here.lon], {
-            radius: 9, color: "#fff", weight: 2, fillColor: WALKED_COLOR, fillOpacity: 1
-          }).addTo(map);
-        } else {
-          liveMarker.setLatLng([here.lat, here.lon]);
+
+    if(isNative()){
+      // Native app: blijft ook volgen met het scherm uit, via een achtergrondservice.
+      const BG = window.Capacitor.Plugins.BackgroundGeolocation;
+      BG.start(
+        {
+          backgroundMessage: "Loopwise houdt je wandeling bij.",
+          backgroundTitle: "Loopwise",
+          requestPermissions: true,
+          distanceFilter: 5
+        },
+        (position, error) => {
+          if(error){
+            setStatus("Kon je positie niet volgen: " + error.message, true);
+            return;
+          }
+          if(position){
+            handlePosition({ lat: position.latitude, lon: position.longitude });
+          }
         }
-        walkedLatLngs.push([here.lat, here.lon]);
-        walkedPath.setLatLngs(walkedLatLngs);
-        if(lastWalkPos){
-          walkedMeters += haversine(lastWalkPos, here);
-          document.getElementById("walkedDist").textContent = (walkedMeters/1000).toFixed(2);
-        }
-        lastWalkPos = here;
-        updateNav(here);
-        map.panTo([here.lat, here.lon], { animate: true });
-      },
-      err => {
-        if(err.code === err.PERMISSION_DENIED){
-          setStatus("Locatietoegang is uitgezet tijdens het lopen. Wandeling gestopt.", true);
-          stopWalk();
-        } else {
-          setStatus("Even geen GPS-signaal, ik probeer het opnieuw.", true);
-        }
-      },
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
-    );
+      ).catch(e => setStatus("Kon achtergrond-tracking niet starten: " + e.message, true));
+    } else {
+      // Webapp/PWA: gewone browser-tracking, blijft alleen actief met scherm aan.
+      requestWakeLock();
+      watchId = navigator.geolocation.watchPosition(
+        pos => handlePosition({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        err => {
+          if(err.code === err.PERMISSION_DENIED){
+            setStatus("Locatietoegang is uitgezet tijdens het lopen. Wandeling gestopt.", true);
+            stopWalk();
+          } else {
+            setStatus("Even geen GPS-signaal, ik probeer het opnieuw.", true);
+          }
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+      );
+    }
   }
 
   function stopWalk(){
-    if(watchId !== null){
+    if(isNative()){
+      window.Capacitor.Plugins.BackgroundGeolocation.stop().catch(()=>{});
+    } else if(watchId !== null){
       navigator.geolocation.clearWatch(watchId);
       watchId = null;
     }
@@ -570,6 +770,7 @@
     document.getElementById("navInstruction").classList.remove("show");
     navSteps = [];
     navIndex = 0;
+    resetReroute();
     document.getElementById("routeInfo").classList.remove("walking");
     if(walkedMeters >= 50 && walkStartTime){
       const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
