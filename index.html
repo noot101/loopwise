@@ -30,6 +30,9 @@
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     background:var(--sand);
     color:var(--ink);
+  }
+  /* Alleen op html, niet ook op body: anders telt de ruimte dubbel. */
+  html{
     padding-top:env(safe-area-inset-top,0px);
     padding-bottom:env(safe-area-inset-bottom,0px);
   }
@@ -52,8 +55,6 @@
   #distanceWrap{ display:flex; flex-direction:column; flex:1 1 100%; min-width:0; gap:2px; }
   #btnRow{ display:flex; gap:10px; width:100%; }
   #btnRow button{ flex:1; }
-  /* Native app: de app regelt de schermranden zelf, anders ontstaat er een lege zone boven/onder. */
-  html.native, html.native body{ padding-top:0; padding-bottom:0; }
   #distanceWrap label{ font-size:0.8rem; color:var(--bark); display:flex; justify-content:space-between; }
   #distanceWrap label b{ color:var(--moss-dark); font-weight:600; }
   #distance{
@@ -182,7 +183,7 @@
   <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v2.5.0</div>
+    <div id="versionTag">v2.5.1</div>
     <div id="navInstruction"><span id="navText"></span><span class="dist" id="navDist"></span></div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
