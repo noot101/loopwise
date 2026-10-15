@@ -13,6 +13,7 @@
 <meta name="apple-mobile-web-app-title" content="Loopwise">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <style>
   :root{
     --moss:#3a5a40;
@@ -92,6 +93,10 @@
   }
   #navInstruction.show{ display:block; }
   #navInstruction .dist{ display:block; font-size:0.75rem; opacity:.8; margin-top:2px; }
+  #compass{ display:none; position:absolute; right:12px; top:70px; z-index:1000; width:44px; height:44px;
+    border-radius:50%; background:rgba(255,255,255,.92); box-shadow:0 1px 5px rgba(0,0,0,.35); cursor:pointer; }
+  #compass.show{ display:block; }
+  #compass svg{ width:44px; height:44px; transition:transform .25s linear; }
   #versionTag{
     position:absolute; left:8px; bottom:6px; font-size:0.7rem; color:var(--bark);
     z-index:900; pointer-events:none; opacity:.65;
@@ -183,7 +188,8 @@
   <div id="status"><span id="statusText"></span> <button id="retryLocate" style="display:none;">Opnieuw proberen</button></div>
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="versionTag">v2.5.1</div>
+    <div id="compass" title="Tik om noord-boven/looprichting-boven te wisselen"><svg id="compassSvg" viewBox="0 0 44 44"><path d="M22 6 L28 24 L22 21 L16 24 Z" fill="#c0392b"/><path d="M22 38 L28 24 L22 21 L16 24 Z" fill="#555"/><text x="22" y="15" font-size="0" fill="#fff">N</text></svg></div>
+    <div id="versionTag">v2.6.0</div>
     <div id="navInstruction"><span id="navText"></span><span class="dist" id="navDist"></span></div>
     <div id="routeInfo">
       <span class="label" id="routeLabel">Route</span>
@@ -262,7 +268,7 @@
   });
 
   function initMap(lat, lon){
-    map = L.map("map").setView([lat, lon], 14);
+    map = L.map("map", { rotate: true, bearing: 0, touchRotate: false, rotateControl: false }).setView([lat, lon], 14);
     L.tileLayer("https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=" + mapKey, {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap-bijdragers &copy; MapTiler"
@@ -440,7 +446,7 @@
               '<path d="M8 1 L14 14 L8 11 L2 14 Z" fill="#fff" stroke="' + color + '" stroke-width="1.6" stroke-linejoin="round"/></svg>',
         iconSize: [18, 18], iconAnchor: [9, 9]
       });
-      L.marker([p.lat, p.lon], { icon: icon, interactive: false, keyboard: false }).addTo(group);
+      L.marker([p.lat, p.lon], { icon: icon, interactive: false, keyboard: false, rotateWithView: true }).addTo(group);
     }
     return group.addTo(map);
   }
@@ -652,12 +658,39 @@
     }
   }
 
-  function speak(text){
+  let ttsVoice = null, lastUtterance = null;
+  function pickVoice(){
     if(!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel(); // vorige aankondiging niet laten overlappen
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "nl-NL";
-    window.speechSynthesis.speak(u);
+    ttsVoice = window.speechSynthesis.getVoices().find(v => /^nl/i.test(v.lang)) || null;
+  }
+  if("speechSynthesis" in window){ pickVoice(); window.speechSynthesis.onvoiceschanged = pickVoice; }
+
+  function speak(text){
+    // Native app: gebruik de TextToSpeech-plugin als die is geïnstalleerd (betrouwbaarder dan de WebView).
+    const TTS = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.TextToSpeech;
+    if(isNative() && TTS){
+      TTS.speak({ text: text, lang: "nl-NL", rate: 1.0, pitch: 1.0, volume: 1.0 }).catch(() => webSpeak(text));
+      return;
+    }
+    webSpeak(text);
+  }
+
+  function webSpeak(text){
+    if(!("speechSynthesis" in window)){ setStatus("Spraak wordt niet ondersteund op dit toestel.", true); return; }
+    try{
+      const synth = window.speechSynthesis;
+      if(synth.speaking || synth.pending) synth.cancel(); // vorige aankondiging niet laten overlappen
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "nl-NL";
+      if(ttsVoice) u.voice = ttsVoice;
+      u.volume = 1;
+      u.onerror = e => setStatus("Spraak mislukt (" + (e.error || "onbekend") + ").", true);
+      lastUtterance = u; // referentie vasthouden, anders kan de browser de spraak voortijdig afbreken
+      synth.resume();
+      setTimeout(() => synth.speak(u), 60); // na cancel() even wachten, anders wordt spraak soms overgeslagen
+    } catch(e){
+      setStatus("Spraak mislukt: " + e.message, true);
+    }
   }
 
   function updateNav(here){
@@ -675,6 +708,42 @@
       navIndex++;
     }
   }
+
+  // ---- Looprichting, kompas en inzoomen ----
+  let heading = null, prevHeadPos = null, followHeading = true, needZoom = false;
+  const WALK_ZOOM = 18;
+
+  function applyHeading(){
+    const rot = (followHeading && heading !== null) ? heading : 0;
+    if(map && map.setBearing) map.setBearing(followHeading && heading !== null ? (360 - heading) % 360 : 0);
+    document.getElementById("compassSvg").style.transform = "rotate(" + (-rot) + "deg)";
+  }
+
+  function updateHeading(here){
+    if(!prevHeadPos){ prevHeadPos = here; return; }
+    if(haversine(prevHeadPos, here) < 6) return; // te weinig beweging = ruis
+    const b = bearingBetween(prevHeadPos, here);
+    if(heading === null){ heading = b; }
+    else {
+      const diff = ((b - heading + 540) % 360) - 180; // kortste draairichting
+      heading = (heading + 0.4 * diff + 360) % 360;   // dempen tegen schokkerige kaart
+    }
+    prevHeadPos = here;
+    applyHeading();
+  }
+
+  function resetHeading(){
+    heading = null; prevHeadPos = null; followHeading = true; needZoom = false;
+    if(map && map.setBearing) map.setBearing(0);
+    const c = document.getElementById("compass");
+    c.classList.remove("show");
+    document.getElementById("compassSvg").style.transform = "rotate(0deg)";
+  }
+
+  document.getElementById("compass").addEventListener("click", () => {
+    followHeading = !followHeading;
+    applyHeading();
+  });
 
   function isNative(){
     return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -699,7 +768,13 @@
     lastWalkPos = here;
     checkRoute(here);
     updateNav(here);
-    map.panTo([here.lat, here.lon], { animate: true });
+    updateHeading(here);
+    if(needZoom){
+      needZoom = false;
+      map.setView([here.lat, here.lon], Math.max(map.getZoom(), WALK_ZOOM));
+    } else {
+      map.panTo([here.lat, here.lon], { animate: true });
+    }
   }
 
   function startWalk(){
@@ -712,6 +787,9 @@
     walkedPath = L.polyline([], { color: WALKED_COLOR, weight: 5, opacity: 0.9 }).addTo(map);
 
     resetReroute();
+    resetHeading();
+    needZoom = true;
+    document.getElementById("compass").classList.add("show");
     const feat = currentRoutes[selectedIndex].feature;
     routePts = buildRoutePts(feat);
     navSteps = buildNavSteps(feat, routePts);
@@ -778,6 +856,7 @@
     navSteps = [];
     navIndex = 0;
     resetReroute();
+    resetHeading();
     document.getElementById("routeInfo").classList.remove("walking");
     if(walkedMeters >= 50 && walkStartTime){
       const log = JSON.parse(localStorage.getItem("loopwise_log") || "[]");
